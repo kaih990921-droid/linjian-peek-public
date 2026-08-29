@@ -49,6 +49,7 @@ function effectiveLinjianUrl() {
   return activeLinjianUrl || LINJIAN_URL_CANDIDATES[0] || "";
 }
 const LINJIAN_TOKEN = process.env.LINJIAN_TOKEN || "";
+const MCP_ACCESS_TOKEN = process.env.MCP_ACCESS_TOKEN || "";
 const DEFAULT_DEVICE = process.env.LINJIAN_DEFAULT_DEVICE || "android-phone";
 
 // v0.3.6.6：公开 MCP 经常被平台限制在 20 秒内返回。
@@ -1775,6 +1776,11 @@ function makeServer() {
   return server;
 }
 
+function hasMcpAccess(req) {
+  const supplied = String(req.query.access_token || "");
+  return Boolean(MCP_ACCESS_TOKEN && supplied === MCP_ACCESS_TOKEN);
+}
+
 const app = express();
 
 app.use((req, res, next) => {
@@ -1823,10 +1829,15 @@ app.get("/health", (_req, res) => res.json({
   stability_note: "v0.3.7.3 修复归电目标包名跳转与陪伴页行动记录同步，保留限流保护。"
 }));
 app.post("/mcp", async (req, res) => {
+  if (!hasMcpAccess(req)) {
+    return res.status(401).json({ ok: false, error: "Unauthorized" });
+  }
   try { const server = makeServer(); const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined }); res.on("close", () => transport.close()); await server.connect(transport); await transport.handleRequest(req, res, req.body); }
   catch (err) { console.error(err); if (!res.headersSent) res.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: String(err?.message || err) }, id: null }); }
 });
 app.get("/mcp", (_req, res) => res.status(405).json({ ok: false, error: "Use POST /mcp for Streamable HTTP MCP." }));
+app.use("/sse", (_req, res) => res.status(410).json({ ok: false, error: "SSE disabled; use protected /mcp endpoint." }));
+app.use("/messages", (_req, res) => res.status(410).json({ ok: false, error: "SSE disabled; use protected /mcp endpoint." }));
 const sseTransports = new Map();
 app.get("/sse", async (_req, res) => {
   try { const transport = new SSEServerTransport("/messages", res); sseTransports.set(transport.sessionId, transport); res.on("close", () => { sseTransports.delete(transport.sessionId); transport.close(); }); await makeServer().connect(transport); }
