@@ -1777,8 +1777,14 @@ function makeServer() {
 }
 
 function hasMcpAccess(req) {
-  const supplied = String(req.params.access_token || "");
-  return Boolean(MCP_ACCESS_TOKEN && supplied === MCP_ACCESS_TOKEN);
+  const pathToken = String(req.params?.access_token || "").trim();
+  const authorization = String(req.headers.authorization || "").trim();
+  const match = authorization.match(/^Bearer\\s+(.+)$/i);
+  const bearerToken = String(match?.[1] || "").trim();
+  return Boolean(
+    MCP_ACCESS_TOKEN &&
+    (pathToken === MCP_ACCESS_TOKEN || bearerToken === MCP_ACCESS_TOKEN)
+  );
 }
 
 const app = express();
@@ -1817,7 +1823,7 @@ app.get("/", (_req, res) => res.type("text/plain").send("掌心窗 unified MCP i
 app.get("/health", (_req, res) => res.json({
   ok: true,
   service: "linjian-public-mcp",
-  version: "0.3.7.3",
+  version: "0.3.7.4-operit",
   has_url: Boolean(LINJIAN_URL_CANDIDATES.length),
   has_token: Boolean(LINJIAN_TOKEN),
   configured_linjian_url: RAW_LINJIAN_URL || "",
@@ -1826,15 +1832,38 @@ app.get("/health", (_req, res) => res.json({
   guardian_day_tools: true,
   diary_tools: true,
   diary_storage: "phone_local",
-  stability_note: "v0.3.7.3 修复归电目标包名跳转与陪伴页行动记录同步，保留限流保护。"
+  stability_note: "v0.3.7.4-operit 增加标准 Bearer 鉴权的 /mcp 路由，并保留旧版路径令牌兼容。"
 }));
-app.post("/mcp/:access_token", async (req, res) => {
+async function handleMcpRequest(req, res) {
   if (!hasMcpAccess(req)) {
+    res.setHeader("WWW-Authenticate", 'Bearer realm="linjian-mcp"');
     return res.status(401).json({ ok: false, error: "Unauthorized" });
   }
-  try { const server = makeServer(); const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true }); res.on("close", () => transport.close()); await server.connect(transport); await transport.handleRequest(req, res, req.body); }
-  catch (err) { console.error(err); if (!res.headersSent) res.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: String(err?.message || err) }, id: null }); }
-});
+  try {
+    const server = makeServer();
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true
+    });
+    res.on("close", () => transport.close());
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  } catch (err) {
+    console.error(err);
+    if (!res.headersSent) {
+      res.status(500).json({
+        jsonrpc: "2.0",
+        error: { code: -32603, message: String(err?.message || err) },
+        id: null
+      });
+    }
+  }
+}
+
+// Standard Streamable HTTP endpoint used by Operit and other MCP clients.
+// Keep the legacy token-in-path route for existing private links.
+app.post("/mcp", handleMcpRequest);
+app.post("/mcp/:access_token", handleMcpRequest);
 app.get("/mcp", (_req, res) => res.status(405).json({ ok: false, error: "Use POST /mcp for Streamable HTTP MCP." }));
 app.use("/sse", (_req, res) => res.status(410).json({ ok: false, error: "SSE disabled; use protected /mcp endpoint." }));
 app.use("/messages", (_req, res) => res.status(410).json({ ok: false, error: "SSE disabled; use protected /mcp endpoint." }));
