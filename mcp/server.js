@@ -877,7 +877,7 @@ function makeServer() {
     const latest = configErrors.length ? null : await latestInfo().catch(() => null);
     return { content: [{ type: "text", text: JSON.stringify({
       ok: true,
-      mcp_version: "0.3.7.5-operit-session",
+      mcp_version: "0.3.7.6-operit-diagnostics",
       linjian_url: effectiveLinjianUrl(),
       configured_linjian_url: RAW_LINJIAN_URL,
       fallback_linjian_urls: LINJIAN_URL_CANDIDATES.filter((u) => u !== RAW_LINJIAN_URL),
@@ -885,6 +885,8 @@ function makeServer() {
       has_token: Boolean(LINJIAN_TOKEN),
       config_errors: configErrors,
       health,
+      recent_mcp_requests: recentMcpRequests.slice(0, 20),
+      diagnostics_privacy: "Only method/header presence/status metadata; no tokens or request bodies are recorded.",
       has_latest: Boolean(latest),
       latest
     }, null, 2) }] };
@@ -1791,6 +1793,29 @@ function hasMcpAccess(req) {
 }
 
 const app = express();
+const recentMcpRequests = [];
+
+function rememberMcpRequest(req, res) {
+  const startedAt = new Date().toISOString();
+  const entry = {
+    at: startedAt,
+    method: req.method,
+    path: req.path,
+    user_agent: String(req.headers["user-agent"] || "").slice(0, 160),
+    accept: String(req.headers.accept || "").slice(0, 160),
+    content_type: String(req.headers["content-type"] || "").slice(0, 120),
+    has_authorization: Boolean(req.headers.authorization),
+    has_session_id: Boolean(req.headers["mcp-session-id"]),
+    rpc_method: typeof req.body?.method === "string" ? req.body.method : "",
+    response_status: null
+  };
+  recentMcpRequests.unshift(entry);
+  recentMcpRequests.splice(30);
+  res.on("finish", () => {
+    entry.response_status = res.statusCode;
+  });
+}
+
 
 app.use((req, res, next) => {
   const origin = req.headers.origin || "*";
@@ -1822,6 +1847,10 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json({ limit: "32mb" }));
+app.use((req, res, next) => {
+  if (req.path === "/mcp" || req.path.startsWith("/mcp/")) rememberMcpRequest(req, res);
+  next();
+});
 app.get("/", (_req, res) => res.type("text/plain").send("掌心窗 unified MCP is running. Use /mcp for Streamable HTTP, or /sse for SSE."));
 app.get("/health", (_req, res) => res.json({
   ok: true,
@@ -1835,7 +1864,7 @@ app.get("/health", (_req, res) => res.json({
   guardian_day_tools: true,
   diary_tools: true,
   diary_storage: "phone_local",
-  stability_note: "v0.3.7.5-operit-session 增加 Operit 所需的有状态 Streamable HTTP 会话与 GET/SSE 通道。"
+  stability_note: "v0.3.7.6-operit-diagnostics 增加 Operit 所需的有状态 Streamable HTTP 会话与 GET/SSE 通道。"
 }));
 const mcpTransports = new Map();
 
