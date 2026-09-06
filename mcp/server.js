@@ -877,7 +877,7 @@ function makeServer() {
     const latest = configErrors.length ? null : await latestInfo().catch(() => null);
     return { content: [{ type: "text", text: JSON.stringify({
       ok: true,
-      mcp_version: "0.3.7.7-operit-auth-check",
+      mcp_version: "0.3.7.8-operit-safe-diagnostics",
       linjian_url: effectiveLinjianUrl(),
       configured_linjian_url: RAW_LINJIAN_URL,
       fallback_linjian_urls: LINJIAN_URL_CANDIDATES.filter((u) => u !== RAW_LINJIAN_URL),
@@ -1804,7 +1804,7 @@ function rememberMcpRequest(req, res) {
   const entry = {
     at: startedAt,
     method: req.method,
-    path: req.path,
+    path: req.path.startsWith("/mcp/") ? "/mcp/:access_token" : req.path,
     user_agent: String(req.headers["user-agent"] || "").slice(0, 160),
     accept: String(req.headers.accept || "").slice(0, 160),
     content_type: String(req.headers["content-type"] || "").slice(0, 120),
@@ -1871,7 +1871,7 @@ app.get("/health", (_req, res) => res.json({
   guardian_day_tools: true,
   diary_tools: true,
   diary_storage: "phone_local",
-  stability_note: "v0.3.7.7-operit-auth-check 增加 Operit 所需的有状态 Streamable HTTP 会话与 GET/SSE 通道。"
+  stability_note: "v0.3.7.8-operit-safe-diagnostics 增加 Operit 所需的有状态 Streamable HTTP 会话与 GET/SSE 通道。"
 }));
 const mcpTransports = new Map();
 
@@ -1961,8 +1961,10 @@ app.post("/mcp", handleMcpPost);
 app.get("/mcp", handleMcpSessionRequest);
 app.delete("/mcp", handleMcpSessionRequest);
 
-// Keep the legacy token-in-path POST route for existing private links.
+// Keep the legacy token-in-path routes for existing private links.
 app.post("/mcp/:access_token", handleMcpPost);
+app.get("/mcp/:access_token", handleMcpSessionRequest);
+app.delete("/mcp/:access_token", handleMcpSessionRequest);
 app.use("/sse", (_req, res) => res.status(410).json({ ok: false, error: "SSE disabled; use protected /mcp endpoint." }));
 app.use("/messages", (_req, res) => res.status(410).json({ ok: false, error: "SSE disabled; use protected /mcp endpoint." }));
 const sseTransports = new Map();
