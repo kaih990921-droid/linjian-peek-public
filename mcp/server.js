@@ -877,7 +877,7 @@ function makeServer() {
     const latest = configErrors.length ? null : await latestInfo().catch(() => null);
     return { content: [{ type: "text", text: JSON.stringify({
       ok: true,
-      mcp_version: "0.3.7.6-operit-diagnostics",
+      mcp_version: "0.3.7.7-operit-auth-check",
       linjian_url: effectiveLinjianUrl(),
       configured_linjian_url: RAW_LINJIAN_URL,
       fallback_linjian_urls: LINJIAN_URL_CANDIDATES.filter((u) => u !== RAW_LINJIAN_URL),
@@ -1797,6 +1797,10 @@ const recentMcpRequests = [];
 
 function rememberMcpRequest(req, res) {
   const startedAt = new Date().toISOString();
+  const authorization = String(req.headers.authorization || "").trim();
+  const bearerMatch = authorization.match(/^Bearer\\s+(.+)$/i);
+  const bearerToken = String(bearerMatch?.[1] || "").trim();
+  const pathToken = String(req.params?.access_token || "").trim();
   const entry = {
     at: startedAt,
     method: req.method,
@@ -1805,6 +1809,9 @@ function rememberMcpRequest(req, res) {
     accept: String(req.headers.accept || "").slice(0, 160),
     content_type: String(req.headers["content-type"] || "").slice(0, 120),
     has_authorization: Boolean(req.headers.authorization),
+    auth_matches_mcp: Boolean(bearerToken && bearerToken === MCP_ACCESS_TOKEN),
+    auth_matches_linjian: Boolean(bearerToken && bearerToken === LINJIAN_TOKEN),
+    path_matches_mcp: Boolean(pathToken && pathToken === MCP_ACCESS_TOKEN),
     has_session_id: Boolean(req.headers["mcp-session-id"]),
     rpc_method: typeof req.body?.method === "string" ? req.body.method : "",
     response_status: null
@@ -1864,7 +1871,7 @@ app.get("/health", (_req, res) => res.json({
   guardian_day_tools: true,
   diary_tools: true,
   diary_storage: "phone_local",
-  stability_note: "v0.3.7.6-operit-diagnostics 增加 Operit 所需的有状态 Streamable HTTP 会话与 GET/SSE 通道。"
+  stability_note: "v0.3.7.7-operit-auth-check 增加 Operit 所需的有状态 Streamable HTTP 会话与 GET/SSE 通道。"
 }));
 const mcpTransports = new Map();
 
