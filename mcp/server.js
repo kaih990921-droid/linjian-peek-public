@@ -2,6 +2,8 @@ import express from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import { randomUUID } from "crypto";
 import { z } from "zod";
 import fs from "fs";
 import path from "path";
@@ -875,7 +877,7 @@ function makeServer() {
     const latest = configErrors.length ? null : await latestInfo().catch(() => null);
     return { content: [{ type: "text", text: JSON.stringify({
       ok: true,
-      mcp_version: "0.3.7.4-operit",
+      mcp_version: "0.3.7.5-operit-session",
       linjian_url: effectiveLinjianUrl(),
       configured_linjian_url: RAW_LINJIAN_URL,
       fallback_linjian_urls: LINJIAN_URL_CANDIDATES.filter((u) => u !== RAW_LINJIAN_URL),
@@ -1833,22 +1835,51 @@ app.get("/health", (_req, res) => res.json({
   guardian_day_tools: true,
   diary_tools: true,
   diary_storage: "phone_local",
-  stability_note: "v0.3.7.4-operit 增加标准 Bearer 鉴权的 /mcp 路由，并保留旧版路径令牌兼容。"
+  stability_note: "v0.3.7.5-operit-session 增加 Operit 所需的有状态 Streamable HTTP 会话与 GET/SSE 通道。"
 }));
-async function handleMcpRequest(req, res) {
-  if (!hasMcpAccess(req)) {
-    res.setHeader("WWW-Authenticate", 'Bearer realm="linjian-mcp"');
-    return res.status(401).json({ ok: false, error: "Unauthorized" });
-  }
+const mcpTransports = new Map();
+
+function requireMcpAccess(req, res) {
+  if (hasMcpAccess(req)) return true;
+  res.setHeader("WWW-Authenticate", 'Bearer realm="linjian-mcp"');
+  res.status(401).json({ ok: false, error: "Unauthorized" });
+  return false;
+}
+
+async function handleMcpPost(req, res) {
+  if (!requireMcpAccess(req, res)) return;
+
   try {
-    const server = makeServer();
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-      enableJsonResponse: true
-    });
-    res.on("close", () => transport.close());
-    await server.connect(transport);
-    await transport.handleRequest(req, res, req.body);
+    const sessionId = String(req.headers["mcp-session-id"] || "").trim();
+    let entry = sessionId ? mcpTransports.get(sessionId) : null;
+
+    if (!entry) {
+      if (sessionId || !isInitializeRequest(req.body)) {
+        return res.status(400).json({
+          jsonrpc: "2.0",
+          error: { code: -32000, message: "Bad Request: missing or invalid MCP session" },
+          id: null
+        });
+      }
+
+      const server = makeServer();
+      let transport;
+      transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        enableJsonResponse: false,
+        onsessioninitialized: (newSessionId) => {
+          mcpTransports.set(newSessionId, { server, transport });
+        }
+      });
+      transport.onclose = () => {
+        const activeSessionId = transport.sessionId;
+        if (activeSessionId) mcpTransports.delete(activeSessionId);
+      };
+      await server.connect(transport);
+      entry = { server, transport };
+    }
+
+    await entry.transport.handleRequest(req, res, req.body);
   } catch (err) {
     console.error(err);
     if (!res.headersSent) {
@@ -1861,11 +1892,41 @@ async function handleMcpRequest(req, res) {
   }
 }
 
-// Standard Streamable HTTP endpoint used by Operit and other MCP clients.
-// Keep the legacy token-in-path route for existing private links.
-app.post("/mcp", handleMcpRequest);
-app.post("/mcp/:access_token", handleMcpRequest);
-app.get("/mcp", (_req, res) => res.status(405).json({ ok: false, error: "Use POST /mcp for Streamable HTTP MCP." }));
+async function handleMcpSessionRequest(req, res) {
+  if (!requireMcpAccess(req, res)) return;
+
+  const sessionId = String(req.headers["mcp-session-id"] || "").trim();
+  const entry = sessionId ? mcpTransports.get(sessionId) : null;
+  if (!entry) {
+    return res.status(400).json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Bad Request: missing or invalid MCP session" },
+      id: null
+    });
+  }
+
+  try {
+    await entry.transport.handleRequest(req, res);
+  } catch (err) {
+    console.error(err);
+    if (!res.headersSent) {
+      res.status(500).json({
+        jsonrpc: "2.0",
+        error: { code: -32603, message: String(err?.message || err) },
+        id: null
+      });
+    }
+  }
+}
+
+// Operit's Kotlin MCP runtime opens GET/SSE after initialization and expects
+// subsequent POST requests to reuse the returned MCP session ID.
+app.post("/mcp", handleMcpPost);
+app.get("/mcp", handleMcpSessionRequest);
+app.delete("/mcp", handleMcpSessionRequest);
+
+// Keep the legacy token-in-path POST route for existing private links.
+app.post("/mcp/:access_token", handleMcpPost);
 app.use("/sse", (_req, res) => res.status(410).json({ ok: false, error: "SSE disabled; use protected /mcp endpoint." }));
 app.use("/messages", (_req, res) => res.status(410).json({ ok: false, error: "SSE disabled; use protected /mcp endpoint." }));
 const sseTransports = new Map();
